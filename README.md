@@ -1,2 +1,2 @@
 # BrickRC
-Remote Controlled Mondstorms Car based on Remotebrick
+Remote Controlled Mindstorms Car based on Remotebrick
