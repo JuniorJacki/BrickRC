@@ -2,6 +2,7 @@ package de.juniorjacki;
 
 import de.juniorjacki.remotebrick.DataSubscriber;
 import de.juniorjacki.remotebrick.Hub;
+import de.juniorjacki.remotebrick.devices.ConnectedDevice;
 import de.juniorjacki.remotebrick.devices.Motor;
 import de.juniorjacki.remotebrick.devices.UltrasonicSensor;
 import de.juniorjacki.remotebrick.types.Image;
@@ -17,12 +18,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class Main {
     public static void main(String[] args) {
 
+
+        CompletableFuture.runAsync(() -> new Main("A8:E2:C1:9B:9B:C3","A8:E2:C1:9C:52:E1"));
+        new Main("A8:E2:C1:9C:91:02","A8:E2:C1:9B:A8:F3");
+    }
+
+
+    public Main(String controllerMac,String robotMac) {
         Hub robot = null;
         Hub controller = null;
         int i = 0;
         while (robot == null || controller == null) {
-            if(robot == null) robot = Hub.connect("A8:E2:C1:9C:52:E1");
-            if(controller == null) controller = Hub.connect("A8:E2:C1:9B:9B:C3");
+            if(robot == null) robot = Hub.connect(robotMac);
+            if(controller == null) controller = Hub.connect(controllerMac);
             Logger.info("Connection attempt " + i);
             try {
                 Thread.sleep(100);
@@ -34,12 +42,112 @@ public class Main {
         startPowerControl(controller, robot);
         startTurnControl(controller, robot);
         startDistanceReport(controller, robot);
+        startGrabControl(controller,robot);
+        startLightControl(controller,robot);
     }
 
-    static AtomicBoolean updateDistance = new AtomicBoolean(false);
-    static AtomicInteger lastDist = new AtomicInteger(0);
 
-    static void startDistanceReport(Hub controller,Hub robot) {
+    AtomicInteger lastLight = new AtomicInteger(0);
+     AtomicBoolean updateLight = new AtomicBoolean(true);
+
+     void startLightControl(Hub controller, Hub robot) {
+        Motor lightControl = (Motor)controller.getDevice(Port.A);
+        UltrasonicSensor ultraLight = (UltrasonicSensor) robot.getDevice(Port.F);
+        DataSubscriber.registerSimpleListener(lightControl, Motor.MotorDataType.AbsolutePosition,newValue -> {
+            int light = (Integer) newValue;
+            if(light < 5 && light > -5) {
+                light = 0;
+            } else {
+                light = Math.min(100,light);
+                light = Math.max(-100,light);
+            }
+            if (light != lastLight.get()) {
+                lastLight.set(light);
+                updateLight.set(true);
+            }
+        });
+        new Thread(()->{
+            while(true) {
+                if (updateLight.get()) {
+                    updateLight.set(false);
+                    Logger.info("Light Control " + lastLight.get());
+                    int light = lastLight.get()*2;
+                    if (light == 0) ultraLight.getControl().lightUp(0,0,0,0);
+                    if (light < 0) {
+                        light += -1;
+                        int l = light;
+                        int r = 0;
+                        if (light < 100) {
+                            l = 100;
+                            r = l -100;
+                        }
+                        ultraLight.getControl().lightUp(r,l,0,0).send();
+                    } else {
+                        int l = light;
+                        int r = 0;
+                        if (light < 100) {
+                            l = 100;
+                            r = l -100;
+                        }
+                        ultraLight.getControl().lightUp(0,0,l,r).send();
+                    }
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException ignored) {}
+                }
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException ignored) {}
+            }
+        }).start();
+    }
+
+     AtomicInteger lastGrab = new AtomicInteger(0);
+     AtomicBoolean updateGrab = new AtomicBoolean(true);
+
+     void startGrabControl(Hub controller, Hub robot) {
+
+        Motor grabControl = (Motor)controller.getDevice(Port.C);
+        ConnectedDevice grabD = robot.getDevice(Port.B);
+        if (grabD != null) {
+                Motor grabPower = (Motor) grabD;
+            DataSubscriber.registerSimpleListener(grabControl, Motor.MotorDataType.AbsolutePosition,newValue -> {
+                int grab = (Integer) newValue;
+
+                grab *= 0.5;
+                grab = Math.min(40,grab);
+                grab = Math.max(-20,grab);
+
+                if (grab != lastGrab.get()) {
+                    lastGrab.set(grab);
+                    updateGrab.set(true);
+                }
+            });
+            new Thread(()->{
+                while(true) {
+                    if (updateGrab.get()) {
+                        updateGrab.set(false);
+                        Logger.info("Grab Control " + lastGrab.get());
+                        grabPower.getControl().goToRelativePosition(lastGrab.get(),40,false,StopType.BRAKE,100,100).sendAsync();
+                        Logger.info("Set Grab");
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException ignored) {}
+                    }
+                    try {
+                        Thread.sleep(20);
+                    } catch (InterruptedException ignored) {}
+                }
+            }).start();
+        }
+
+    }
+
+
+     AtomicBoolean updateDistance = new AtomicBoolean(false);
+     AtomicInteger lastDist = new AtomicInteger(0);
+
+     void startDistanceReport(Hub controller,Hub robot) {
         DataSubscriber.registerSimpleListener((UltrasonicSensor)robot.getDevice(Port.F), UltrasonicSensor.UltrasonicSensorDataType.Distance, newValue -> {
             if ((Integer) newValue != lastDist.get()) {
                 updateDistance.set(true);
@@ -73,10 +181,10 @@ public class Main {
         }).start();
     }
 
-    static AtomicInteger lastPow = new AtomicInteger(0);
-    static AtomicBoolean updatePow = new AtomicBoolean(false);
+     AtomicInteger lastPow = new AtomicInteger(0);
+     AtomicBoolean updatePow = new AtomicBoolean(false);
 
-    static void startPowerControl(Hub controller,Hub robot) {
+     void startPowerControl(Hub controller,Hub robot) {
         Motor powerControl = (Motor)controller.getDevice(Port.B);
         Motor leftPower = (Motor)robot.getDevice(Port.C);
         Motor rightPower = (Motor)robot.getDevice(Port.E);
@@ -117,10 +225,10 @@ public class Main {
         }).start();
     }
 
-    static AtomicInteger lastTurn = new AtomicInteger(0);
-    static AtomicBoolean updateTurn = new AtomicBoolean(true);
+     AtomicInteger lastTurn = new AtomicInteger(0);
+     AtomicBoolean updateTurn = new AtomicBoolean(true);
 
-    static void startTurnControl(Hub controller,Hub robot) {
+     void startTurnControl(Hub controller,Hub robot) {
         Motor turnControl = (Motor)controller.getDevice(Port.E);
         Motor turnPower = (Motor)robot.getDevice(Port.A);
         DataSubscriber.registerSimpleListener(turnControl, Motor.MotorDataType.AbsolutePosition,newValue -> {
@@ -155,18 +263,18 @@ public class Main {
     }
 
 
-    static AtomicBoolean tryNormalizePow = new AtomicBoolean(false);
-    static AtomicBoolean tryNormalizeTurn = new AtomicBoolean(false);
-    static final int moveDetect = 1;
+     AtomicBoolean tryNormalizePow = new AtomicBoolean(false);
+     AtomicBoolean tryNormalizeTurn = new AtomicBoolean(false);
+     final int moveDetect = 1;
 
-    static void startNormalization(Hub controller) {
+     void startNormalization(Hub controller) {
         Motor powerControl = (Motor)controller.getDevice(Port.B);
         Motor turnControl = (Motor)controller.getDevice(Port.E);
         normalize(tryNormalizePow,powerControl,-45);
         //normalize(tryNormalizeTurn,turnControl,0);
     }
 
-    static void normalize(AtomicBoolean activator, Motor motor,int defaultPos) {
+     void normalize(AtomicBoolean activator, Motor motor,int defaultPos) {
         DataSubscriber.registerSimpleListener(motor, Motor.MotorDataType.AbsolutePosition,newValue -> {
             activator.set(true);
         });
@@ -184,11 +292,9 @@ public class Main {
                             break;
                         }
                         if (motor.getPosition() <= pos - moveDetect || motor.getPosition() >= pos + moveDetect) {
-                            Logger.info("Continue");
                             pos = motor.getPosition();
                             continue;
                         } else {
-                            Logger.info("Break");
                             motor.getControl().stop(StopType.BRAKE,100).send();
                             break;
                         }
@@ -209,7 +315,7 @@ public class Main {
      * @return Ein neues Image-Objekt mit der dargestellten Zahl.
      * @throws IllegalArgumentException wenn die Zahl außerhalb von 0-200 liegt.
      */
-    public static Image fromNumber(int number) {
+    public  Image fromNumber(int number) {
         if (number < 0 || number > 200) {
             throw new IllegalArgumentException("Zahl muss zwischen 0 und 200 liegen!");
         }
@@ -257,7 +363,7 @@ public class Main {
     }
 
 
-    private static void drawDigit(Image img, int[][] digitPattern, int startX, int brightness) {
+    private void drawDigit(Image img, int[][] digitPattern, int startX, int brightness) {
         for (int y = 0; y < 5; y++) {
             for (int x = 0; x < digitPattern[y].length; x++) {
                 if (startX + x > 4) continue;
